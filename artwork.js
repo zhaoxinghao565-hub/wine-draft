@@ -1,5 +1,5 @@
 import { DEFAULT_BRAND, brandName, phoneOf, wechatOf } from './brand.js';
-import { DISCLAIMER, GROUPS, PRODUCTS, QUOTE_RULE, TEST_LABEL, TREND_COLOR,
+import { DISCLAIMER, GROUPS, PRODUCTS, TEST_LABEL, TREND_COLOR,
   aboutText, chineseDate, introText, priceValue, quoteDisclaimerText, trend } from './data.js';
 
 const WIDTH = 1080;
@@ -128,9 +128,12 @@ function ad(ctx, y, qrImage, brand) {
 export function makeLong(draft, qrImage, brand = DEFAULT_BRAND) {
   const c = document.createElement('canvas');
   const ctx = c.getContext('2d');
+  const formal = Boolean(draft.hideWatermark);
   const intro = lines(ctx, introText(brand), 34, RIGHT - LEFT);
-  const source = lines(ctx, (draft.quote ? '原始行情来源｜' : '来源｜') + draft.source, 25, RIGHT - LEFT);
-  const disclaimer = lines(ctx, draft.quote ? quoteDisclaimerText(brand) : DISCLAIMER, 32, RIGHT - LEFT);
+  // 正式稿不展示行情来源，避免公开截图出处。
+  const source = formal ? [] :
+    lines(ctx, (draft.quote ? '原始行情来源｜' : '来源｜') + draft.source, 25, RIGHT - LEFT);
+  const disclaimer = lines(ctx, draft.quote ? quoteDisclaimerText(brand, { formal }) : DISCLAIMER, 32, RIGHT - LEFT);
   const about = lines(ctx, aboutText(brand), 32, RIGHT - LEFT);
   const beforeTable = 350 + intro.length * 53 + source.length * 43;
   const afterTable = beforeTable + GROUPS.length * (62 + 59 + 38) + PRODUCTS.length * 72;
@@ -144,13 +147,15 @@ export function makeLong(draft, qrImage, brand = DEFAULT_BRAND) {
   write(ctx, chineseDate(draft.date).full, LEFT, 83, 36, '#F3D4A2', { weight: 600 });
   const headline = draft.quote ? brandName(brand) + '回收参考报价' : brandName(brand) + '行情参考';
   write(ctx, headline, LEFT - 3, 167, 83, '#FFF7E9', { family: SERIF, weight: 700 });
-  const subtitle = draft.hideWatermark ? (draft.quote ? QUOTE_RULE : '市场行情参考') : TEST_LABEL;
-  write(ctx, subtitle, LEFT, 239, 33, '#F4D6AC');
+  // 正式稿不写「原价减 10 元」的换算说明。
+  const subtitle = formal ? (draft.quote ? '' : '市场行情参考') : TEST_LABEL;
+  if (subtitle) write(ctx, subtitle, LEFT, 239, 33, '#F4D6AC');
   if (!draft.hideWatermark) watermark(ctx, RIGHT - 60, 81);
   paragraph(ctx, intro, LEFT, 330, 34, 53);
   paragraph(ctx, source, LEFT, 342 + intro.length * 53, 25, 43);
   const y = table(ctx, draft, beforeTable);
-  write(ctx, '— 待核实 · 单位：元', LEFT, y + 3, 27, MUTED);
+  // 正式稿不显示内部核对提示。
+  write(ctx, formal ? '单位：元' : '— 待核实 · 单位：元', LEFT, y + 3, 27, MUTED);
   const noteY = y + 62;
   write(ctx, '价格说明', LEFT, noteY, 38, WINE, { weight: 700 });
   paragraph(ctx, disclaimer, LEFT, noteY + 54, 32, 50);

@@ -10,9 +10,12 @@ export function introText(brand = DEFAULT_BRAND) {
     '地区提供名酒、洋酒、红酒回收咨询，支持发送酒品照片初步估价。';
 }
 
-export function quoteDisclaimerText(brand = DEFAULT_BRAND) {
-  return '以上为' + brandName(brand) + '回收参考报价，' + QUOTE_RULE +
-    '缺值或原价低于 10 元的项目留空待核实。实际回收价格根据酒品年份、规格、包装、品相、保存情况及实物查验结果综合确定。';
+export function quoteDisclaimerText(brand = DEFAULT_BRAND, options = {}) {
+  const formal = Boolean(options.formal);
+  const head = '以上为' + brandName(brand) + '回收参考报价，';
+  const tail = '实际回收价格根据酒品年份、规格、包装、品相、保存情况及实物查验结果综合确定。';
+  // 正式稿不写"减 10 元"的算法，也不写内部待核实流程。
+  return formal ? head + tail : head + QUOTE_RULE + '缺值或原价低于 10 元的项目留空待核实。' + tail;
 }
 
 export function aboutText(brand = DEFAULT_BRAND) {
@@ -163,8 +166,9 @@ export function article(draft, brand = DEFAULT_BRAND) {
   const date = chineseDate(draft.date);
   const test = !draft.hideWatermark;
   const format = draft.quote ? '回收参考报价' : '行情参考';
+  // 正式稿的正文不写价格换算规则，避免对外暴露加价方式。
   const qualifier = (test ? '本图为' + TEST_LABEL + '。' : '') +
-    (draft.quote ? QUOTE_RULE : '市场行情仅供参考。');
+    (draft.quote ? (test ? QUOTE_RULE : '') : '市场行情仅供参考。');
   const wechat = wechatOf(brand);
   return {
     title: date.short + brandName(brand) + format + '｜茅台、五粮液、剑南春',
