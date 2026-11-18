@@ -1,0 +1,130 @@
+{
+  "date": "2026-11-18",
+  "source": "用户提供的今日酒价截图（仅作为历史测试样例，商用对外发布权待核实）",
+  "is_test": true,
+  "phone": "13900918519",
+  "wechat": "13900918519",
+  "qr_image": null,
+  "products": [
+    {
+      "group": "maotai_liutong",
+      "section": "贵州茅台｜核心流通行情",
+      "name": "2026年飞天（原箱）",
+      "spec": "53度/500ml",
+      "yesterday": 1670,
+      "today": 1670
+    },
+    {
+      "group": "maotai_liutong",
+      "section": "贵州茅台｜核心流通行情",
+      "name": "2026年飞天（散瓶）",
+      "spec": "53度/500ml",
+      "yesterday": 1660,
+      "today": 1660
+    },
+    {
+      "group": "maotai_liutong",
+      "section": "贵州茅台｜核心流通行情",
+      "name": "2025年飞天（原箱）",
+      "spec": "53度/500ml",
+      "yesterday": 1780,
+      "today": 1780
+    },
+    {
+      "group": "maotai_liutong",
+      "section": "贵州茅台｜核心流通行情",
+      "name": "2025年飞天（散瓶）",
+      "spec": "53度/500ml",
+      "yesterday": 1720,
+      "today": 1720
+    },
+    {
+      "group": "maotai_liutong",
+      "section": "贵州茅台｜核心流通行情",
+      "name": "公斤茅台（原箱）",
+      "spec": "53度/1L",
+      "yesterday": 3280,
+      "today": 3280
+    },
+    {
+      "group": "maotai_liutong",
+      "section": "贵州茅台｜核心流通行情",
+      "name": "43度飞天（原箱）",
+      "spec": "43度/500ml",
+      "yesterday": 805,
+      "today": 805
+    },
+    {
+      "group": "maotai_shoucang",
+      "section": "贵州茅台｜高年份收藏行情",
+      "name": "精品茅台",
+      "spec": "53度/500ml",
+      "yesterday": 2255,
+      "today": 2255
+    },
+    {
+      "group": "maotai_shoucang",
+      "section": "贵州茅台｜高年份收藏行情",
+      "name": "十五年茅台",
+      "spec": "53度/500ml",
+      "yesterday": 3990,
+      "today": 3990
+    },
+    {
+      "group": "maotai_shoucang",
+      "section": "贵州茅台｜高年份收藏行情",
+      "name": "三十年茅台",
+      "spec": "53度/500ml",
+      "yesterday": 12950,
+      "today": 12950
+    },
+    {
+      "group": "maotai_shoucang",
+      "section": "贵州茅台｜高年份收藏行情",
+      "name": "五十年茅台",
+      "spec": "53度/500ml",
+      "yesterday": 25800,
+      "today": 25800
+    },
+    {
+      "group": "wuliangye",
+      "section": "五粮液行情",
+      "name": "普五（八代）",
+      "spec": "52度/500ml",
+      "yesterday": 800,
+      "today": 800
+    },
+    {
+      "group": "wuliangye",
+      "section": "五粮液行情",
+      "name": "普五（八代）",
+      "spec": "52度/5L",
+      "yesterday": 8800,
+      "today": 8800
+    },
+    {
+      "group": "wuliangye",
+      "section": "五粮液行情",
+      "name": "五粮液",
+      "spec": "39度/500ml",
+      "yesterday": 650,
+      "today": 650
+    },
+    {
+      "group": "jiannanchun",
+      "section": "剑南春行情",
+      "name": "水晶剑",
+      "spec": "52度/500ml",
+      "yesterday": 405,
+      "today": 405
+    },
+    {
+      "group": "jiannanchun",
+      "section": "剑南春行情",
+      "name": "珍藏级",
+      "spec": "52度/500ml",
+      "yesterday": 580,
+      "today": 580
+    }
+  ]
+}

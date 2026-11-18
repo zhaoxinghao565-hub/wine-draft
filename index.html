@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f3ee">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' blob: data:; style-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>上海名酒行情制稿台</title>
+  <meta name="description" content="在手机上整理名酒价格，生成微信公众号行情长图、封面和文章文案。">
+  <link rel="manifest" href="./manifest.json" crossorigin="use-credentials">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="icon" type="image/png" href="./icon-192.png">
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+  <script type="module" src="./offline.js"></script>
+</head>
+<body>
+  <header class="mast">
+    <div class="wrap mast-inner">
+      <div class="brand"><span class="seal" id="brand-seal" aria-hidden="true">沪</span><span><span id="brand-name">上海名酒</span><span class="brand-sub">公众号制稿台</span></span></div>
+      <span id="mode" class="mode">制稿草稿</span>
+    </div>
+  </header>
+  <main class="wrap">
+    <div class="hero">
+      <h1>名酒行情制稿</h1>
+      <p>选取行情截图，核对后导出公众号长图、封面和文案。</p>
+      <details class="offline-help">
+        <summary><span id="offline-status" role="status">正在准备离线使用…</span><span class="hint">离线使用说明</span></summary>
+        <p class="hint">用 Safari 分享菜单选择「添加到主屏幕」，打开「作为网页 App 打开」。首次从主屏幕进入时保持联网，看到「离线已就绪」后即可断网制稿。</p>
+      </details>
+    </div>
+    <nav class="mobile-nav" aria-label="制稿步骤">
+      <button id="edit-tab" type="button" aria-pressed="true">录入数据</button>
+      <button id="output-tab" type="button" aria-pressed="false">预览与导出</button>
+    </nav>
+
+    <div class="workspace">
+      <section id="edit-panel" class="panel">
+        <div class="panel-title"><h2>录入数据</h2><span id="count" class="count" aria-live="polite">15 款待核实</span></div>
+        <div class="scan-panel">
+          <label class="field-label" for="screenshots">选择行情截图</label>
+          <input id="screenshots" type="file" accept="image/*" multiple>
+          <button id="scan" class="primary" type="button" disabled>识别并填入</button>
+          <p id="scan-status" class="hint" role="status">可同时选取多张。截图在本机识别，建议用清晰的四列表格原图。</p>
+        </div>
+        <details class="capture-help" id="json-help">
+          <summary>导入 JSON 或载入测试样例</summary>
+          <p class="hint">也可以把截图和整理提示词发给 ChatGPT，再粘贴返回的 JSON。</p>
+          <button id="copy-prompt" class="secondary" type="button">复制整理提示词</button>
+          <textarea id="screenshot-prompt" aria-label="行情截图整理提示词" rows="5" readonly hidden></textarea>
+          <p id="prompt-status" class="status" role="status"></p>
+        <label class="field-label" for="json">粘贴行情 JSON</label>
+        <textarea id="json" rows="3" autocomplete="off" spellcheck="false" placeholder="粘贴整理好的 JSON，或在下方直接编辑价格"></textarea>
+        <div class="actions">
+          <button id="import" class="primary" type="button">导入 JSON</button>
+          <button id="sample" class="secondary" type="button">载入测试样例</button>
+        </div>
+        <p id="import-status" class="status" role="status"></p>
+        </details>
+        <details id="issues" class="issues" hidden><summary>查看待核实问题</summary><ul id="issue-list"></ul></details>
+        <div class="rule"></div>
+        <div class="metadata">
+          <label>行情日期<input id="date" type="date"></label>
+          <label>数据来源<input id="source" type="text" placeholder="填写截图或报价来源" maxlength="240"></label>
+        </div>
+        <details class="price-details" id="price-details">
+          <summary><span>编辑 15 款价格</span><span class="hint">单位：元</span></summary>
+          <p class="hint">留空或无效值显示为「—」。原箱、散瓶按各自酒款录入。</p>
+          <div id="prices"></div>
+        </details>
+        <details class="settings">
+          <summary>本地数据</summary>
+          <label class="checkbox"><input type="checkbox" id="remember">在这个浏览器保存最新数据</label>
+          <p class="hint">行情数据仅在当前设备处理。</p>
+          <button id="clear" class="secondary" type="button">清空数据</button>
+        </details>
+        <details class="settings" id="brand-settings">
+          <summary>品牌与联系方式</summary>
+          <p class="hint">改完立即套用到长图、封面和文章文案。设置只保存在本浏览器，清空行情数据不会影响这里。</p>
+          <div class="brand-grid">
+            <label>城市<input id="brand-city" type="text" maxlength="8" placeholder="上海" autocomplete="off" spellcheck="false"></label>
+            <label>品牌名<input id="brand-name-input" type="text" maxlength="14" placeholder="留空则用「城市 + 名酒」" autocomplete="off" spellcheck="false"></label>
+            <label>印章字<input id="brand-seal-input" type="text" maxlength="2" placeholder="沪" autocomplete="off"></label>
+            <label>联系电话<input id="brand-phone" type="tel" maxlength="20" placeholder="13900918519" autocomplete="off" spellcheck="false"></label>
+            <label>微信号<input id="brand-wechat" type="text" maxlength="24" placeholder="留空显示「微信同号」" autocomplete="off" spellcheck="false"></label>
+          </div>
+          <label class="field-label" for="brand-qr">微信二维码</label>
+          <input id="brand-qr" type="file" accept="image/*">
+          <div class="qr-preview">
+            <img id="brand-qr-preview" alt="当前二维码" hidden>
+            <span id="brand-qr-note" class="hint">当前使用内置二维码</span>
+          </div>
+          <div class="actions">
+            <button id="brand-qr-reset" class="secondary" type="button">用内置二维码</button>
+            <button id="brand-reset" class="secondary" type="button">恢复默认品牌</button>
+          </div>
+          <p id="brand-status" class="status" role="status"></p>
+        </details>
+        <button id="next" class="primary mobile-next" type="button">预览与导出 <span aria-hidden="true">→</span></button>
+      </section>
+
+      <section id="output-panel" class="panel">
+        <div class="panel-title"><h2>预览与导出</h2><span class="count">PNG</span></div>
+        <div id="edition" class="edition" hidden>
+          <label class="field-label" for="output-kind">长图价格口径</label>
+          <select id="output-kind">
+            <option value="quote">回收参考报价 · 原价减 10 元</option>
+            <option value="market">市场原价 · 按录入值展示</option>
+          </select>
+          <p id="quote-note" class="hint">录入表保留原价。长图的昨日和今日参考价分别减 10 元。</p>
+          <p id="edition-status" class="hint" role="status">草稿导出带 TEST 水印。</p>
+          <label class="checkbox" id="rights-label"><input type="checkbox" id="rights" disabled>我已核对日期、来源和价格，并确认有权发布本批行情。</label>
+          <button id="formal" class="secondary" type="button" disabled>生成正式稿</button>
+        </div>
+        <div class="segmented" aria-label="预览图片">
+          <button id="show-cover" type="button" aria-pressed="true">封面</button>
+          <button id="show-long" type="button" aria-pressed="false">行情长图</button>
+        </div>
+        <div class="preview">
+          <div id="placeholder" class="preview-placeholder"><span class="ornament" aria-hidden="true"></span><p id="render-status" role="status">填写日期和来源后即可生成</p></div>
+          <img id="preview-image" alt="上海名酒行情制稿预览" hidden>
+        </div>
+        <p id="dimensions" class="hint dimensions" hidden></p>
+        <div class="export-buttons">
+          <button id="share-long" class="primary" type="button" disabled>保存行情长图</button>
+          <button id="share-cover" class="secondary" type="button" disabled>保存封面</button>
+        </div>
+        <p id="share-status" class="status" role="status"></p>
+        <div id="download-links" class="plain-links" hidden>
+          <a id="download-long" download>下载长图</a><a id="download-cover" download>下载封面</a><a id="open-image" target="_blank" rel="noopener">单独打开图片</a>
+        </div>
+        <p id="qr-status" class="status" role="status" hidden>联系二维码未加载，长图暂留空。请联网刷新后重试。</p>
+        <p class="hint save-hint">iPhone 分享面板选「存储图像」。也可下载到「文件」，打开 PNG 后再存到相册。微信上传长图时可能压缩。</p>
+        <div class="rule"></div>
+        <h3>文章文案</h3>
+        <label class="field-label" for="article-title">标题</label>
+        <textarea id="article-title" readonly rows="2" placeholder="填写行情日期后生成"></textarea>
+        <button id="copy-title" class="small secondary" type="button" disabled>复制标题</button>
+        <label class="field-label" for="article-body">简介</label>
+        <textarea id="article-body" readonly rows="5" placeholder="填写行情日期后生成"></textarea>
+        <button id="copy-body" class="small secondary" type="button" disabled>复制正文</button>
+        <p id="copy-status" role="status" class="status"></p>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
