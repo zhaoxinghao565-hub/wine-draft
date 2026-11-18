@@ -155,7 +155,8 @@ export function makeLong(draft, qrImage, brand = DEFAULT_BRAND) {
   paragraph(ctx, source, LEFT, 342 + intro.length * 53, 25, 43);
   const y = table(ctx, draft, beforeTable);
   // 正式稿不显示内部核对提示。
-  write(ctx, formal ? '单位：元' : '— 待核实 · 单位：元', LEFT, y + 3, 27, MUTED);
+  // 正式稿整行不显示（内部核对提示与「单位：元」都不要）；测试稿保留，便于核对。
+  if (!formal) write(ctx, '— 待核实 · 单位：元', LEFT, y + 3, 27, MUTED);
   const noteY = y + 62;
   write(ctx, '价格说明', LEFT, noteY, 38, WINE, { weight: 700 });
   paragraph(ctx, disclaimer, LEFT, noteY + 54, 32, 50);
