@@ -81,6 +81,9 @@ export function prepareScreenshot(canvas) {
       masked.fill(1, Math.max(0, y - 2), Math.min(height, y + 3));
     }
   }
+  const maskedRows = masked.reduce((sum, value) => sum + value, 0);
+  // 表格密集时遮罩会吃掉大半页面，导致密度全为 0；超过 60% 就不再遮罩。
+  if (maskedRows > height * 0.6) masked.fill(0);
   const bodyHeight = height - masked.reduce((sum, value) => sum + value, 0);
   const density = new Float32Array(width);
   for (let x = 0; x < width; x++) {
@@ -90,12 +93,14 @@ export function prepareScreenshot(canvas) {
     }
     density[x] = bodyHeight ? dark / bodyHeight : 0;
   }
-  const columns = [[0.25, 0.47], [0.49, 0.66], [0.67, 0.84]].map(([lo, hi]) => {
+  // 找不到竖线时按四列表格的常见比例兜底，避免整张图直接放弃。
+  const fallback = [0.33, 0.60, 0.79].map(ratio => Math.round(width * ratio));
+  const columns = [[0.25, 0.47], [0.49, 0.66], [0.67, 0.84]].map(([lo, hi], index) => {
     let peak = Math.floor(width * lo);
     for (let x = peak + 1; x < width * hi; x++) {
       if (density[x] > density[peak]) peak = x;
     }
-    return density[peak] > 0.26 ? peak : null;
+    return density[peak] > 0.18 ? peak : fallback[index];
   });
   ctx.fillStyle = '#fff';
   for (let y = 0; y < height; y++) if (masked[y]) ctx.fillRect(0, y, width, 1);
@@ -106,7 +111,14 @@ export function prepareScreenshot(canvas) {
   while (rightEdge > width * 0.84 && density[rightEdge] > 0.8) rightEdge--;
   ctx.fillRect(0, 0, leftEdge, height);
   ctx.fillRect(rightEdge + 1, 0, width - rightEdge, height);
-  return { canvas, header, columns: columns.includes(null) ? null : columns };
+  // 元信息条：整图上方 30%（最多 360px），红底、白底、深色底都能读到日期与来源。
+  const metaHeight = Math.max(1, Math.min(360, Math.round(height * 0.30)));
+  const meta = makeCanvas(width, metaHeight);
+  const metaCtx = meta.getContext('2d');
+  metaCtx.fillStyle = '#fff';
+  metaCtx.fillRect(0, 0, width, metaHeight);
+  metaCtx.drawImage(canvas, 0, 0, width, metaHeight, 0, 0, width, metaHeight);
+  return { canvas, header, meta, columns };
 }
 
 async function retryNames(worker, canvas, boundary, unclear) {
@@ -152,9 +164,11 @@ export async function recognizeScreenshots(files, progress) {
     for (const [index, file] of files.entries()) {
       progress(index + 1, files.length);
       try {
-        const { canvas, header, columns } = prepareScreenshot(await loadScreenshot(file));
+        const { canvas, header, meta, columns } = prepareScreenshot(await loadScreenshot(file));
         const { data } = await worker.recognize(canvas, {}, { text: true, tsv: true });
-        const marked = header ? (await worker.recognize(header)).data.text : '';
+        const banner = header ? (await worker.recognize(header)).data.text : '';
+        const topText = meta ? (await worker.recognize(meta)).data.text : '';
+        const marked = (banner + '\n' + topText).trim();
         const { rows, unclear } = readRows(data.tsv, columns);
         if (columns) rows.push(...await retryNames(worker, canvas, columns[0], unclear));
         const issue = rows.length ? '' : '第 ' + (index + 1) + ' 张未匹配到酒款，请换清晰的四列表格截图。';
