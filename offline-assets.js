@@ -26,7 +26,7 @@ const files = new Map([
 ]);
 
 export const cachePrefix = scope => 'wine-draft:' + scope.href + ':';
-export const cacheName = scope => cachePrefix(scope) + 'v2.6.0';
+export const cacheName = scope => cachePrefix(scope) + 'v2.7.0';
 export const isAsset = name => files.has(name);
 export const resource = (scope, name) => new URL(name, scope).href;
 export const assetNames = () => [...files.keys()];
@@ -50,13 +50,24 @@ export async function prepareCache(scope, onProgress) {
   }
   const total = missing.length;
   let done = 0;
+  const failed = [];
   if (onProgress) onProgress(done, total);
-  if (!total) return;
-  // 先并发下载，再逐个写入，避免中途失败时留下半个缓存。
-  const responses = await Promise.all(missing.map(name => fetchAsset(scope, name)));
+  if (!total) return { total, failed };
+  // 单个资源失败（弱网、单文件 404）不应让整个离线能力失效：逐个记录，其余照常缓存。
+  const results = await Promise.allSettled(missing.map(name => fetchAsset(scope, name)));
   for (const [index, name] of missing.entries()) {
-    await cache.put(resource(scope, name), responses[index]);
+    const result = results[index];
+    if (result.status === 'fulfilled') {
+      try {
+        await cache.put(resource(scope, name), result.value);
+      } catch {
+        failed.push(name);
+      }
+    } else {
+      failed.push(name);
+    }
     done += 1;
     if (onProgress) onProgress(done, total);
   }
+  return { total, failed };
 }

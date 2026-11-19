@@ -4,7 +4,8 @@ import { cacheName, cachePrefix, isAsset, prepareCache, resource } from './offli
 const scope = new URL(self.registration.scope);
 
 self.addEventListener('install', event => {
-  event.waitUntil(prepareCache(scope));
+  // 缓存完成后立即跳过等待，让新版本在下次刷新时就能生效（否则要等所有旧页面关闭）。
+  event.waitUntil(prepareCache(scope).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', event => {

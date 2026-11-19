@@ -1,7 +1,7 @@
 import { PRODUCTS, GROUPS, PRICE_KEYS, article, blankDraft, imageName, importDraft,
   outputDraft, pendingCount, priceValue, screenshotPrompt, trend, validDate } from './data.js';
 import { makeCover, makeLong } from './artwork.js';
-import { DEFAULT_BRAND, brandName, clearBrand, loadBrand, saveBrand, sealOf } from './brand.js';
+import { DEFAULT_BRAND, brandName, clearBrand, loadBrand, normalizeBrand, saveBrand, sealOf } from './brand.js';
 
 const $ = id => document.getElementById(id);
 const STORAGE_KEY = 'sh-wine-draft-v1';
@@ -26,6 +26,33 @@ function loadContactQr() {
     contactQr = { key, promise: image.decode().then(() => image, () => null) };
   }
   return contactQr.promise;
+}
+
+// 二维码先缩到合适尺寸再保存：手机照片动辄 3-5 MB，直接存会把 localStorage 撑爆。
+async function compressQr(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    let dataUrl = '';
+    for (const limit of [768, 512, 384]) {
+      const scale = Math.min(1, limit / Math.max(image.naturalWidth, image.naturalHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      dataUrl = canvas.toDataURL('image/png');
+      canvas.width = canvas.height = 1;
+      if (dataUrl.length <= 400000) break; // 约 300 KB
+    }
+    return dataUrl;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 function restore() {
@@ -161,12 +188,21 @@ function refreshText() {
   const pending = pendingCount(exported);
   $('edition-status').textContent = status + (ready && pending ? ' ' + pending + ' 款有待核实项，缺值显示「—」。' : '');
 
+  const sourceLength = Array.from(draft.source).length;
+  const sourceTooLong = sourceLength > 240;
+  $('source-hint').hidden = !sourceTooLong;
+  if (sourceTooLong) {
+    $('source-hint').textContent = '来源请控制在 240 字以内（当前 ' + sourceLength + ' 字），否则无法生成图片。';
+  }
+  $('source').setAttribute('aria-invalid', String(sourceTooLong));
+
   const hasDate = validDate(draft.date);
   const text = hasDate ? article(exported, brand) : { title: '', body: '' };
   $('article-title').value = text.title;
   $('article-body').value = text.body;
-  $('copy-title').disabled = !hasDate;
-  $('copy-body').disabled = !hasDate;
+  // 没有可用文案时禁用复制，避免复制出空内容。
+  $('copy-title').disabled = !text.title;
+  $('copy-body').disabled = !text.body;
   $('copy-status').textContent = '';
 }
 
@@ -272,6 +308,11 @@ async function prepareImages(version) {
       link.download = asset.file.name;
       $('share-' + kind).disabled = false;
     }
+    if (!qrImage) {
+      $('qr-status').textContent = brand.qr
+        ? '自定义二维码无法解析，长图暂留空。可在「品牌与联系方式」里重新上传。'
+        : '联系二维码未加载，长图暂留空。请联网刷新后重试。';
+    }
     $('qr-status').hidden = Boolean(qrImage);
     $('download-links').hidden = false;
     selectImage(selected);
@@ -346,11 +387,13 @@ function showStep(step) {
 let qrPreviewSrc = '';
 
 function fillBrandForm() {
-  $('brand-city').value = brand.city;
-  $('brand-seal-input').value = brand.seal;
-  $('brand-name-input').value = brand.name;
-  $('brand-phone').value = brand.phone;
-  $('brand-wechat').value = brand.wechat;
+  // 仅在值不同时写回，避免输入过程中光标跳到末尾。
+  const put = (id, value) => { const el = $(id); if (el.value !== value) el.value = value; };
+  put('brand-city', brand.city);
+  put('brand-seal-input', brand.seal);
+  put('brand-name-input', brand.name);
+  put('brand-phone', brand.phone);
+  put('brand-wechat', brand.wechat);
   const custom = Boolean(brand.qr);
   if (custom !== Boolean(qrPreviewSrc)) {
     qrPreviewSrc = custom ? brand.qr : '';
@@ -382,13 +425,18 @@ function readBrandForm() {
   };
 }
 
+let brandTimer;
 function brandChanged(message) {
-  const saved = saveBrand(readBrandForm());
-  brand = saved.brand;
+  // 输入时立即更新页头与文案；存储和重绘合并到停顿后再做，避免每个按键都重写缓存、重画两张长图。
+  brand = normalizeBrand(readBrandForm());
   applyBrand();
-  $('brand-status').textContent = saved.ok ? (message || '') :
-    '已套用到图片和文案，但当前浏览器存不下这份设置（二维码可能过大），刷新后会恢复上次保存的值。';
-  update();
+  clearTimeout(brandTimer);
+  brandTimer = setTimeout(() => {
+    const saved = saveBrand(brand);
+    $('brand-status').textContent = saved.ok ? (message || '') :
+      '已套用到图片和文案，但当前浏览器存不下这份设置，刷新后会恢复上次保存的值。';
+    update();
+  }, 300);
 }
 
 makePriceTable();
@@ -448,12 +496,19 @@ $('scan').addEventListener('click', async () => {
 });
 
 $('import').addEventListener('click', () => {
+  let next;
   try {
-    const next = importDraft($('json').value);
-    replaceDraft(next, '已导入。请核对日期、来源和待核实的酒款。');
+    next = importDraft($('json').value);
   } catch (error) {
     $('import-status').textContent = error.message;
+    return;
   }
+  // 与截图识别一致：已有录入内容时先确认，避免静默覆盖手工数据。
+  if (hasDraftContent() && !window.confirm('导入会用新数据整份替换当前的日期、来源和价格，且无法撤销。继续导入？')) {
+    $('import-status').textContent = '已取消导入，当前草稿保持不变。';
+    return;
+  }
+  replaceDraft(next, '已导入。请核对日期、来源和待核实的酒款。');
 });
 
 $('sample').addEventListener('click', async () => {
@@ -524,19 +579,20 @@ $('brand-qr').addEventListener('change', event => {
     event.target.value = '';
     return;
   }
-  if (file.size > 2 * 1024 * 1024) {
-    status.textContent = '二维码图片请小于 2 MB。';
+  if (file.size > 10 * 1024 * 1024) {
+    status.textContent = '二维码图片请小于 10 MB。';
     event.target.value = '';
     return;
   }
-  const reader = new FileReader();
-  reader.onload = () => {
-    brand = { ...brand, qr: String(reader.result) };
-    brandChanged('二维码已更新。');
+  status.textContent = '正在处理二维码…';
+  compressQr(file).then(dataUrl => {
+    brand = { ...brand, qr: dataUrl };
+    brandChanged('二维码已更新（已压缩到适合保存的尺寸）。');
     event.target.value = '';
-  };
-  reader.onerror = () => { status.textContent = '读取图片失败，请重试。'; };
-  reader.readAsDataURL(file);
+  }).catch(() => {
+    status.textContent = '读取图片失败，请换一张试试。';
+    event.target.value = '';
+  });
 });
 
 $('brand-qr-reset').addEventListener('click', () => {
