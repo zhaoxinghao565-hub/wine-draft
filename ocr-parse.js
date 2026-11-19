@@ -226,6 +226,20 @@ export function mergeScan(existing, batch) {
       }
       // 本次没有识别到这款酒时保留原值，不打扰用户。
     }
+    // 一列没读出来、另一列有值时，有值的那列也要求确认：缺了对照价就无法判断它是否被误读。
+    if (records.length) {
+      const readFailure = field => {
+        const check = checked[field];
+        return check && (check.reason === '数字待核对' || check.reason === '规格待核对');
+      };
+      const photos = [...new Set(records.map(item => item.photo))];
+      if (readFailure('yesterday') && priceValue(row.today) !== null && !checked.today) {
+        checked.today = { choices: [], photos, reason: '缺少对照价' };
+      }
+      if (readFailure('today') && priceValue(row.yesterday) !== null && !checked.yesterday) {
+        checked.yesterday = { choices: [], photos, reason: '缺少对照价' };
+      }
+    }
     // 跨记录合并后整体复核：价格分别来自不同识别记录时，单条记录内部无法判断异常。
     if (implausible(row.yesterday, row.today)) {
       for (const field of PRICE_KEYS) {
