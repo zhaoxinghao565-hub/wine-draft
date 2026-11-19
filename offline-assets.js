@@ -26,7 +26,7 @@ const files = new Map([
 ]);
 
 export const cachePrefix = scope => 'wine-draft:' + scope.href + ':';
-export const cacheName = scope => cachePrefix(scope) + 'v2.8.0';
+export const cacheName = scope => cachePrefix(scope) + 'v2.9.0';
 export const isAsset = name => files.has(name);
 export const resource = (scope, name) => new URL(name, scope).href;
 export const assetNames = () => [...files.keys()];

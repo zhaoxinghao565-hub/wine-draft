@@ -20,7 +20,8 @@ async function loadScreenshot(file) {
     const image = new Image();
     image.src = url;
     await image.decode();
-    const scale = Math.min(1, 2000 / Math.max(image.naturalWidth, image.naturalHeight));
+    // 长截图压得太小会让 30px 的文字变成 20px，识别率明显下降；上限放宽到 3200。
+    const scale = Math.min(1, 3200 / Math.max(image.naturalWidth, image.naturalHeight));
     const canvas = makeCanvas(Math.round(image.naturalWidth * scale), Math.round(image.naturalHeight * scale));
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#fff';
@@ -32,30 +33,14 @@ async function loadScreenshot(file) {
   }
 }
 
-function headerImage(pixels, width, height) {
-  let left = width;
-  let right = 0;
-  let top = height;
-  let bottom = 0;
-  for (let y = 0; y < Math.min(320, height * 0.55); y += 2) {
-    const red = [];
-    for (let x = Math.floor(width * 0.50); x < width; x += 2) {
-      const i = 4 * (y * width + x);
-      if (pixels[i] > 120 && pixels[i] - pixels[i + 1] > 55 && pixels[i] - pixels[i + 2] > 30) red.push(x);
-    }
-    if (red.length < width * 0.06) continue;
-    left = Math.min(left, red[0]);
-    right = Math.max(right, red.at(-1));
-    top = Math.min(top, y);
-    bottom = Math.max(bottom, y);
-  }
-  if (right - left < width * 0.12 || bottom - top < 20) return null;
+function cropRedBlock(pixels, width, block) {
+  const { left, right, top, bottom } = block;
   const header = makeCanvas(right - left + 24, bottom - top + 24);
   const ctx = header.getContext('2d');
   const image = ctx.createImageData(header.width, header.height);
   image.data.fill(255);
-  for (let y = top + 5; y < bottom - 5; y++) {
-    for (let x = left + 5; x < right - 5; x++) {
+  for (let y = Math.max(0, top + 5); y < bottom - 5; y++) {
+    for (let x = Math.max(0, left + 5); x < right - 5; x++) {
       const raw = 4 * (y * width + x);
       const out = 4 * ((y - top + 12) * header.width + x - left + 12);
       const shade = pixels[raw + 1] >= 150 && pixels[raw + 2] >= 150 ? 0 : 255;
@@ -66,11 +51,40 @@ function headerImage(pixels, width, height) {
   return header;
 }
 
+// 长截图里每个品牌区块都有自己的红色日期块，位置不固定；整图扫描并取前几个。
+function headerImages(pixels, width, height) {
+  const limit = Math.min(height, Math.round(height * 0.85));
+  const bands = [];
+  let current = null;
+  for (let y = 0; y < limit; y += 2) {
+    const red = [];
+    for (let x = Math.floor(width * 0.45); x < width; x += 2) {
+      const i = 4 * (y * width + x);
+      if (pixels[i] > 120 && pixels[i] - pixels[i + 1] > 55 && pixels[i] - pixels[i + 2] > 30) red.push(x);
+    }
+    if (red.length < width * 0.06) {
+      if (current) { bands.push(current); current = null; }
+      continue;
+    }
+    if (!current) current = { left: red[0], right: red.at(-1), top: y, bottom: y };
+    else {
+      current.left = Math.min(current.left, red[0]);
+      current.right = Math.max(current.right, red.at(-1));
+      current.bottom = y;
+    }
+  }
+  if (current) bands.push(current);
+  return bands
+    .filter(block => block.right - block.left >= width * 0.12 && block.bottom - block.top >= 20)
+    .slice(0, 3)
+    .map(block => cropRedBlock(pixels, width, block));
+}
+
 export function prepareScreenshot(canvas) {
   const { width, height } = canvas;
   const ctx = canvas.getContext('2d');
   const { data } = ctx.getImageData(0, 0, width, height);
-  const header = headerImage(data, width, height);
+  const headers = headerImages(data, width, height);
   const masked = new Uint8Array(height);
   const left = Math.floor(width * 0.1);
   const right = Math.floor(width * 0.9);
@@ -118,7 +132,7 @@ export function prepareScreenshot(canvas) {
   metaCtx.fillStyle = '#fff';
   metaCtx.fillRect(0, 0, width, metaHeight);
   metaCtx.drawImage(canvas, 0, 0, width, metaHeight, 0, 0, width, metaHeight);
-  return { canvas, header, meta, columns };
+  return { canvas, headers, meta, columns };
 }
 
 async function retryNames(worker, canvas, boundary, unclear) {
@@ -164,9 +178,10 @@ export async function recognizeScreenshots(files, progress) {
     for (const [index, file] of files.entries()) {
       progress(index + 1, files.length);
       try {
-        const { canvas, header, meta, columns } = prepareScreenshot(await loadScreenshot(file));
+        const { canvas, headers, meta, columns } = prepareScreenshot(await loadScreenshot(file));
         const { data } = await worker.recognize(canvas, {}, { text: true, tsv: true });
-        const banner = header ? (await worker.recognize(header)).data.text : '';
+        let banner = '';
+        for (const header of headers) banner += (await worker.recognize(header)).data.text + '\n';
         const topText = meta ? (await worker.recognize(meta)).data.text : '';
         const marked = (banner + '\n' + topText).trim();
         const { rows, unclear } = readRows(data.tsv, columns);

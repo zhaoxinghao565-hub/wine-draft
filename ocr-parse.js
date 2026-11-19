@@ -26,7 +26,8 @@ export function findProduct(name, spec) {
 function readPrice(words) {
   // 阈值从 72 放宽到 60：手机截图分辨率较低时置信度普遍偏低，数字格式仍会被校验。
   if (!words.length || words.some(word => word.conf < 60)) return '';
-  const raw = normalize(words.map(word => word.text).join(''));
+  // 去掉涨跌箭头等装饰符号（如「1680 ↑」），只保留数字、逗号和小数点。
+  const raw = normalize(words.map(word => word.text).join('')).replace(/[^\d.,]/g, '');
   if (/^\d{1,7}(?:\.\d{1,2})?$/.test(raw)) return raw;
   return /^\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?$/.test(raw) ? raw.replace(/,/g, '') : '';
 }
