@@ -75,6 +75,17 @@ function implausible(a, b) {
   return hi - lo > Math.max(500, hi * 0.5);
 }
 
+// 箭头被读成尾部数字时（如 2260 → 22603），去掉末位往往能恢复合理值。
+function trimCandidates(value, other) {
+  const out = [];
+  const text = String(value);
+  for (let cut = 1; cut <= 2; cut++) {
+    const trimmed = text.slice(0, -cut);
+    if (/^\d{1,7}(?:\.\d{1,2})?$/.test(trimmed) && !implausible(trimmed, other)) out.push(trimmed);
+  }
+  return out;
+}
+
 export function matchedRow(index, label, name, prices) {
   if (index < 0 || !brandMatches(index, label)) return null;
   const checkBrand = !label && ambiguousName(name);
@@ -214,6 +225,23 @@ export function mergeScan(existing, batch) {
         };
       }
       // 本次没有识别到这款酒时保留原值，不打扰用户。
+    }
+    // 跨记录合并后整体复核：价格分别来自不同识别记录时，单条记录内部无法判断异常。
+    if (implausible(row.yesterday, row.today)) {
+      for (const field of PRICE_KEYS) {
+        if (!row[field]) continue;
+        const other = field === 'yesterday' ? row.today : row.yesterday;
+        const choices = [...new Set([row[field], ...trimCandidates(row[field], other)])];
+        if (!checked[field]) {
+          checked[field] = {
+            choices,
+            photos: [...new Set(records.map(item => item.photo))],
+            reason: '涨跌幅异常'
+          };
+        } else {
+          checked[field] = { ...checked[field], choices, reason: '涨跌幅异常' };
+        }
+      }
     }
     review.push(checked);
     return row;
