@@ -32,8 +32,18 @@ async function loadScreenshot(file) {
     image.src = url;
     await image.decode();
     // 长截图压得太小会让 30px 的文字变成 20px，识别率明显下降；上限放宽到 3200。
-    const scale = Math.min(1, 3200 / Math.max(image.naturalWidth, image.naturalHeight));
-    const raw = makeCanvas(Math.round(image.naturalWidth * scale), Math.round(image.naturalHeight * scale));
+    let scale = Math.min(1, 3200 / Math.max(image.naturalWidth, image.naturalHeight));
+    let width = Math.round(image.naturalWidth * scale);
+    let height = Math.round(image.naturalHeight * scale);
+    // 窄图（微信压缩常见）先放大到约 1000px 宽，文字变大后识别率明显回升。
+    if (width < 800) {
+      const up = Math.min(3, 1200 / width);
+      if (height * up <= 4000) {
+        width = Math.round(width * up);
+        height = Math.round(height * up);
+      }
+    }
+    const raw = makeCanvas(width, height);
     const rawCtx = raw.getContext('2d');
     rawCtx.fillStyle = '#fff';
     rawCtx.fillRect(0, 0, raw.width, raw.height);
@@ -50,10 +60,53 @@ async function loadScreenshot(file) {
       ctx.fillRect(0, 0, work.width, work.height);
       ctx.globalCompositeOperation = 'source-over';
     }
-    return { raw, work };
+    return { raw, work, sourceWidth: image.naturalWidth };
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+// 涨跌箭头是蓝底圆角图标；OCR 在低质量图上会把它读成数字（如 1680 → 16803）。
+// 在识别前把它涂白，从源头消除这类错值。
+function isArrowPixel(r, g, b) {
+  return b > r + 18 && b > 95;
+}
+
+function arrowBoxes(pixels, width, height, xStart) {
+  const boxes = [];
+  let band = null;
+  for (let y = 0; y < height; y += 2) {
+    let left = Infinity;
+    let right = -1;
+    let count = 0;
+    for (let x = Math.max(0, xStart); x < width; x += 2) {
+      const i = 4 * (y * width + x);
+      if (isArrowPixel(pixels[i], pixels[i + 1], pixels[i + 2])) {
+        count += 1;
+        if (x < left) left = x;
+        if (x > right) right = x;
+      }
+    }
+    if (count >= 8) {
+      if (!band) band = { top: y, bottom: y, left, right };
+      else {
+        band.bottom = y;
+        band.left = Math.min(band.left, left);
+        band.right = Math.max(band.right, right);
+      }
+    } else if (band) {
+      boxes.push(band);
+      band = null;
+    }
+  }
+  if (band) boxes.push(band);
+  return boxes
+    .filter(box => {
+      const h = box.bottom - box.top;
+      const w = box.right - box.left;
+      return h >= 12 && h <= 80 && w >= 12 && w <= 80 && w / h > 0.5 && w / h < 1.8;
+    })
+    .slice(0, 80);
 }
 
 function cropRedBlock(pixels, width, block) {
@@ -121,10 +174,14 @@ function headerImages(pixels, width, height) {
 }
 
 export function prepareScreenshot(raw, work = raw) {
-  const canvas = work;
-  const { width, height } = canvas;
+  const width = work.width;
+  const height = work.height;
   const rawCtx = raw.getContext('2d');
   const rawData = raw === work ? null : rawCtx.getImageData(0, 0, width, height).data;
+  const originalPixels = rawData || rawCtx.getImageData(0, 0, width, height).data;
+
+  const canvas = work;
+  // 轻微旋转（手机拍照/缩放）会让整行错位，先估角度再转正。
   const ctx = canvas.getContext('2d');
   const { data } = ctx.getImageData(0, 0, width, height);
   // 红底日期块和顶部元信息始终在原始配色上检测，反色图会把红色变成青色。
@@ -296,8 +353,12 @@ export async function recognizeScreenshots(files, progress) {
           rows.push(...await retryNames(worker, canvas, columns, unclear, cellBudget));
           rows.push(...await retryMissingPrices(worker, canvas, columns, missing, cellBudget));
         }
-        const issue = rows.length ? '' : '第 ' + (index + 1) + ' 张未匹配到酒款，请换清晰的四列表格截图。';
-        results.push({ rows, text: data.text + '\n' + marked, issue });
+        const issue = rows.length ? '' : '第 ' + (index + 1) +
+          ' 张里没有 15 款模板内的酒款（可能只截到表头或其他品牌），请换含目标酒款的截图。';
+        const warning = shot.sourceWidth < 800
+          ? '第 ' + (index + 1) + ' 张截图宽度只有 ' + shot.sourceWidth + ' 像素，识别率会下降，建议发送原图。'
+          : '';
+        results.push({ rows, text: data.text + '\n' + marked, issue, warning });
       } catch {
         results.push({ issue: '第 ' + (index + 1) + ' 张无法识别，请用清晰的 PNG 或 JPG 重试。' });
       }

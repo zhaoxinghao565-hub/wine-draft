@@ -535,7 +535,7 @@ $('scan').addEventListener('click', async () => {
       return;
     }
     if (!batch.matches.some(rows => rows.length)) {
-      status.textContent = '没有匹配到已有酒款，请换清晰的四列行情截图。草稿已保留。';
+      status.textContent = '这张截图里没有 15 款模板内的酒款（可能只截到表头或其他品牌）。草稿已保留。';
       return;
     }
     if (batch.confirmPhotos.length && !window.confirm('图 ' + batch.confirmPhotos.join('、') +

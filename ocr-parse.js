@@ -1,4 +1,4 @@
-import { PRODUCTS, PRICE_KEYS, validDate } from './data.js';
+import { PRODUCTS, PRICE_KEYS, priceValue, validDate } from './data.js';
 
 const normalize = text => text.normalize('NFKC').replace(/\s+/g, '');
 const key = text => normalize(text).replace(/[()｜|,、]/g, '');
@@ -42,6 +42,12 @@ function ambiguousName(name) {
 function readPrice(words) {
   // 去掉涨跌箭头等装饰符号，只保留数字、逗号和小数点。
   words = words.filter(word => !/^[↑↓⬆⬇↗↘]+$/.test(word.text));
+  // 箭头图标常被读成单个数字（如「3」），按几何特征剔除：近方形、明显比文字高的 token。
+  words = words.filter(word => {
+    if (!(word.height && word.width)) return true;
+    const square = word.width / word.height > 0.65 && word.width / word.height < 1.6;
+    return !(square && word.height >= 34 && word.width >= 26);
+  });
   if (!words.length || words.some(word => word.conf < 60)) return '';
   const raw = normalize(words.map(word => word.text).join('')).replace(/[^\d.,]/g, '');
   if (/^\d{1,7}(?:\.\d{1,2})?$/.test(raw)) return raw;
@@ -59,6 +65,14 @@ export function brandMatches(index, label) {
   const group = brandGroup(label);
   if (!group) return true;
   return PRODUCTS[index].group.startsWith(group);
+}
+
+// 同一天同一款酒的涨跌幅不可能很大；差异过大说明数字被误读（如箭头被读成 3）。
+function implausible(a, b) {
+  if (priceValue(a) === null || priceValue(b) === null) return false;
+  const hi = Math.max(Number(a), Number(b));
+  const lo = Math.min(Number(a), Number(b));
+  return hi - lo > Math.max(500, hi * 0.5);
 }
 
 export function matchedRow(index, label, name, prices) {
@@ -81,7 +95,7 @@ export function readRows(tsv, columns, brands = []) {
     if (!lines.has(rowId)) lines.set(rowId, [[], [], [], []]);
     lines.get(rowId)[column].push({
       text, conf: Number(cells[10]), left: Number(cells[6]),
-      top: Number(cells[7]), height: Number(cells[9])
+      top: Number(cells[7]), width: Number(cells[8]), height: Number(cells[9])
     });
   }
   const rows = [];
@@ -97,6 +111,7 @@ export function readRows(tsv, columns, brands = []) {
     if (index >= 0) {
       const row = matchedRow(index, brand, name, prices);
       if (row) {
+        if (implausible(prices.yesterday, prices.today)) row.suspicious = true;
         rows.push(row);
         // 记下缺价的格子，供后续定向补识别（数字白名单）。
         const allWords = [...nameWords, ...specWords, ...yesterday, ...today];
@@ -158,6 +173,7 @@ export function assembleOcr(images) {
   const matches = PRODUCTS.map(() => []);
   images.forEach((image, n) => {
     if (image.issue) issues.push(image.issue);
+    if (image.warning) issues.push(image.warning);
     const meta = metadata(image.text || '');
     if (meta.dates.length) dated.push(n);
     meta.dates.forEach(date => dates.add(date));
@@ -181,15 +197,18 @@ export function mergeScan(existing, batch) {
     const checked = {};
     for (const field of PRICE_KEYS) {
       const choices = [...new Set(records.filter(item => !item.checkSpec && item[field]).map(item => item[field]))];
-      const verified = records.some(item => !item.checkSpec && !item.checkBrand && item[field]);
+      const verified = records.some(item => !item.checkSpec && !item.checkBrand && !item.suspicious
+        && !implausible(item.yesterday, item.today) && item[field]);
       if (choices.length === 1 && verified) {
         row[field] = choices[0];
       } else if (records.length) {
+        const suspect = records.some(item => item.suspicious || implausible(item.yesterday, item.today));
         const photos = [...new Set(records.map(item => item.photo))];
         checked[field] = {
           choices,
           photos,
           reason: choices.length > 1 ? '报价冲突'
+            : suspect ? '涨跌幅异常'
             : choices.length ? '品牌待核对'
             : records.every(item => item.checkSpec) ? '规格待核对' : '数字待核对'
         };
