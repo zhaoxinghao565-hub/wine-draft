@@ -11,6 +11,8 @@ let brand = loadBrand();
 let files = {};
 let generation = 0;
 let timer;
+let rendering = false;
+let queuedRender = null;
 let selected = 'cover';
 let contactQr = { key: '', promise: null };
 let scanning = false;
@@ -212,6 +214,7 @@ function selectImage(kind) {
 function requestImages() {
   const version = ++generation;
   clearTimeout(timer);
+  queuedRender = null;
   Object.values(files).forEach(asset => URL.revokeObjectURL(asset.url));
   files = {};
   $('share-status').textContent = '';
@@ -248,6 +251,12 @@ function renderFile(kind, qrImage, exported) {
 }
 
 async function prepareImages(version) {
+  // 连点或改价很快时，避免两张画布同时生成把页面卡住：排队，只保留最后一次。
+  if (rendering) {
+    queuedRender = version;
+    return;
+  }
+  rendering = true;
   try {
     const qrImage = await loadContactQr();
     if (version !== generation) return;
@@ -278,6 +287,11 @@ async function prepareImages(version) {
     }, { once: true });
     $('placeholder').querySelector('button')?.remove();
     $('placeholder').append(retry);
+  } finally {
+    rendering = false;
+    const next = queuedRender;
+    queuedRender = null;
+    if (next === generation) prepareImages(next);
   }
 }
 

@@ -81,6 +81,45 @@ function shownPrice(raw) {
   return priceValue(raw) === null ? '—' : String(raw).trim();
 }
 
+// 涨跌额用 BigInt 计算，避免 0.1 + 0.2 这类小数误差。
+export function changeAmount(row) {
+  const parts = [row.today, row.yesterday].map(value => String(value).trim().split('.'));
+  const decimals = Math.max(...parts.map(([, fraction = '']) => fraction.length));
+  const [today, yesterday] = parts.map(([whole, fraction = '']) =>
+    BigInt(whole + fraction.padEnd(decimals, '0')));
+  const delta = today - yesterday;
+  const digits = (delta < 0n ? -delta : delta).toString().padStart(decimals + 1, '0');
+  if (!decimals) return digits;
+  const fraction = digits.slice(-decimals).replace(/0+$/, '');
+  return digits.slice(0, -decimals) + (fraction ? '.' + fraction : '');
+}
+
+// 今日列：有涨跌时在价格旁标 ↑/↓ 变化额；放不下就分两行。
+function todayCell(ctx, row, center, y) {
+  const change = trend(row);
+  const color = TREND_COLOR[change];
+  const price = shownPrice(row.today);
+  const main = { align: 'center', weight: 700, maxWidth: 172 };
+  if (change !== 'up' && change !== 'down') {
+    write(ctx, price, center, y + 36, 36, color, main);
+    return;
+  }
+  const label = (change === 'up' ? '↑' : '↓') + changeAmount(row);
+  ctx.font = '700 36px ' + FONT;
+  const priceWidth = ctx.measureText(price).width;
+  ctx.font = '600 27px ' + FONT;
+  const labelWidth = ctx.measureText(label).width;
+  const width = priceWidth + 10 + labelWidth;
+  if (width <= main.maxWidth) {
+    const left = center - width / 2;
+    write(ctx, price, left, y + 36, 36, color, { weight: 700 });
+    write(ctx, label, left + priceWidth + 10, y + 37, 27, color, { weight: 600 });
+  } else {
+    write(ctx, price, center, y + 24, 36, color, main);
+    write(ctx, label, center, y + 56, 27, color, { ...main, weight: 600 });
+  }
+}
+
 function table(ctx, draft, y) {
   const anchors = [LEFT + 20, 501, 724, 915];
   let index = 0;
@@ -89,9 +128,13 @@ function table(ctx, draft, y) {
     write(ctx, draft.quote ? section.replace(/行情$/, '') : section, LEFT + 23, y + 25, 38, WINE, { weight: 700 });
     y += 62;
     rect(ctx, LEFT, y, RIGHT - LEFT, 59, '#F4E8D4');
-    const headings = draft.quote ? ['品名', '规格', '昨日参考价', '今日参考价'] : ['品名', '规格', '昨日行情', '今日行情'];
+    const base = draft.quote ? ['品名', '规格', '昨日参考价', '今日参考价'] : ['品名', '规格', '昨日行情', '今日行情'];
+    // 正式稿不再单独写「单位：元」，改为标在价格列表头；测试稿保留原有列名。
+    const unit = draft.hideWatermark ? '（元）' : '';
+    const headings = base.map((title, i) => (i === 2 || i === 3 ? title + unit : title));
     headings.forEach((title, i) =>
-      write(ctx, title, anchors[i], y + 29, 31, '#67442E', { weight: 600, align: i ? 'center' : 'left' }));
+      write(ctx, title, anchors[i], y + 29, 31, '#67442E',
+        { weight: 600, align: i ? 'center' : 'left', maxWidth: i ? 186 : undefined }));
     y += 59;
     for (let n = 0; n < items.length; n++, index++) {
       const product = PRODUCTS[index];
@@ -101,8 +144,7 @@ function table(ctx, draft, y) {
       write(ctx, product.spec, anchors[1], y + 36, 31, INK, { align: 'center' });
       write(ctx, shownPrice(row.yesterday), anchors[2], y + 36, 36, INK,
         { align: 'center', maxWidth: 172 });
-      write(ctx, shownPrice(row.today), anchors[3], y + 36, 36, TREND_COLOR[trend(row)],
-        { align: 'center', weight: 700, maxWidth: 172 });
+      todayCell(ctx, row, anchors[3], y);
       rect(ctx, LEFT, y + 71, RIGHT - LEFT, 1, '#E7DBD1');
       y += 72;
     }

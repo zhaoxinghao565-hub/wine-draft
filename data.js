@@ -166,13 +166,20 @@ export function article(draft, brand = DEFAULT_BRAND) {
   const date = chineseDate(draft.date);
   const test = !draft.hideWatermark;
   const format = draft.quote ? '回收参考报价' : '行情参考';
+  // 只统计有今日报价的酒款，标题与正文跟实际图片一致（来自 v11）。
+  const priced = draft.prices
+    .map((row, index) => ({ row, product: PRODUCTS[index] }))
+    .filter(({ row }) => priceValue(row.today) !== null);
+  if (!priced.length) return { title: '', body: '' };
+  const brands = [...new Set(priced.map(({ product }) =>
+    product.section.split('｜')[0].replace(/行情$/, '').replace('贵州茅台', '茅台')))].join('、');
   // 正式稿的正文不写价格换算规则，避免对外暴露加价方式。
   const qualifier = (test ? '本图为' + TEST_LABEL + '。' : '') +
     (draft.quote ? (test ? QUOTE_RULE : '') : '市场行情仅供参考。');
   const wechat = wechatOf(brand);
   return {
-    title: date.short + brandName(brand) + format + '｜茅台、五粮液、剑南春',
-    body: '本期汇总茅台、五粮液、剑南春共15款名酒的' + format + '，涵盖飞天原箱、散瓶及年份老酒。' +
+    title: date.short + brandName(brand) + format + '｜' + brands,
+    body: '本期汇总' + brands + '共' + priced.length + '款名酒的' + format + '。' +
       qualifier + cityOf(brand) + '地区提供名酒、洋酒、红酒回收咨询，可发送酒品照片初步估价，支持预约免费上门和专业鉴定。' +
       '实际报价结合年份、规格、品相和保存情况综合评估。联系电话 ' + phoneOf(brand) + '，' +
       (wechat ? '微信 ' + wechat : '微信同号') + '。'
