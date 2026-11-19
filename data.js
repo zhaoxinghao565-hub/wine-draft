@@ -53,7 +53,7 @@ export const TREND_COLOR = { up: '#AA292D', down: '#167048', flat: '#353034', un
 
 export function blankDraft() {
   return { date: '', source: '', locked: false, hideWatermark: false,
-    prices: PRODUCTS.map(() => ({ yesterday: '', today: '' })), issues: [] };
+    prices: PRODUCTS.map(() => ({ yesterday: '', today: '' })), issues: [], review: [] };
 }
 
 export function screenshotPrompt(brand = DEFAULT_BRAND) {

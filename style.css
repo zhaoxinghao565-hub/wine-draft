@@ -131,3 +131,10 @@ td input[aria-invalid=true] { border-color: var(--wine); background: #fff1f1; }
   .mobile-next { display: flex; justify-content: space-between; width: 100%; margin-top: 16px; }
   body[data-step=edit] #output-panel, body[data-step=output] #edit-panel { display: none; }
 }
+
+.review { margin-top: 4px; }
+.review-note { display: block; margin-top: 4px; color: #7d4517; font-size: 12px; line-height: 1.45; }
+.review-option { font-size: 13px; min-height: 44px; padding: 2px 4px; text-decoration: underline; color: var(--deep); background: transparent; border: 0; }
+input[data-review=true] { background: #fff5d9; border-color: #ae8046; }
+.scan-refs { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 4px; }
+.scan-refs a { color: var(--deep); font-size: 13px; }

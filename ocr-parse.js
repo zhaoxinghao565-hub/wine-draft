@@ -1,4 +1,4 @@
-import { PRODUCTS, PRICE_KEYS, blankDraft, validDate } from './data.js';
+import { PRODUCTS, PRICE_KEYS, validDate } from './data.js';
 
 const normalize = text => text.normalize('NFKC').replace(/\s+/g, '');
 const key = text => normalize(text).replace(/[()｜|,、]/g, '');
@@ -12,28 +12,63 @@ const names = new Map([
 ]);
 const specKey = text => key(text).toLowerCase().replace('毫升', 'ml').replace('升', 'l');
 
+// 只有模板里存在同名酒款时，才值得为每一块截图额外 OCR 品牌标题（很耗时）。
+export function needsBrandLabels() {
+  const seen = new Set();
+  for (const product of PRODUCTS) {
+    if (seen.has(key(product.name))) return true;
+    seen.add(key(product.name));
+  }
+  return false;
+}
+
 export function findProduct(name, spec) {
   const productKey = key(name);
   const canonical = names.get(productKey) || productKey;
   const candidates = PRODUCTS.filter(product => key(product.name) === key(canonical));
   const exact = candidates.find(product => specKey(product.spec) === specKey(spec));
   if (exact) return PRODUCTS.indexOf(exact);
-  // 规格可见却冲突时不套用模板。缺规格时仅接受品名唯一的酒款。
-  if (!specKey(spec) && candidates.length === 1) return PRODUCTS.indexOf(candidates[0]);
   return -1;
 }
 
+function namesForReview(name) { return names.get(key(name)) || name; }
+
+// 短名（精品、十五年……）在本模板里是否对应多款酒。唯一则不需要品牌佐证。
+function ambiguousName(name) {
+  const canonical = namesForReview(name);
+  return PRODUCTS.filter(product => key(product.name) === key(canonical)).length > 1;
+}
+
 function readPrice(words) {
-  // 阈值从 72 放宽到 60：手机截图分辨率较低时置信度普遍偏低，数字格式仍会被校验。
+  // 去掉涨跌箭头等装饰符号，只保留数字、逗号和小数点。
+  words = words.filter(word => !/^[↑↓⬆⬇↗↘]+$/.test(word.text));
   if (!words.length || words.some(word => word.conf < 60)) return '';
-  // 去掉涨跌箭头等装饰符号（如「1680 ↑」），只保留数字、逗号和小数点。
   const raw = normalize(words.map(word => word.text).join('')).replace(/[^\d.,]/g, '');
   if (/^\d{1,7}(?:\.\d{1,2})?$/.test(raw)) return raw;
   return /^\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?$/.test(raw) ? raw.replace(/,/g, '') : '';
 }
 
-export function readRows(tsv, columns) {
-  if (!columns) return { rows: [], unclear: [] };
+const BRANDS = { '茅台': 'maotai', '贵州茅台': 'maotai', '五粮液': 'wuliangye', '剑南春': 'jiannanchun' };
+
+function brandGroup(label) {
+  return label ? BRANDS[normalize(label)] || '' : '';
+}
+
+// 品牌标签读不出来时不据此否决；读出来但和酒款分组冲突才丢弃（说明这一行认错了）。
+export function brandMatches(index, label) {
+  const group = brandGroup(label);
+  if (!group) return true;
+  return PRODUCTS[index].group.startsWith(group);
+}
+
+export function matchedRow(index, label, name, prices) {
+  if (index < 0 || !brandMatches(index, label)) return null;
+  const checkBrand = !label && ambiguousName(name);
+  return { index, ...prices, checkBrand };
+}
+
+export function readRows(tsv, columns, brands = []) {
+  if (!columns) return { rows: [], unclear: [], missing: [] };
   const lines = new Map();
   for (const record of tsv.split('\n').slice(1)) {
     const cells = record.split('\t');
@@ -51,22 +86,43 @@ export function readRows(tsv, columns) {
   }
   const rows = [];
   const unclear = [];
-  for (const [names, specs, yesterday, today] of lines.values()) {
-    const name = names.map(word => word.text).join('');
-    const spec = specs.map(word => word.text).join('');
+  const missing = [];
+  for (const [nameWords, specWords, yesterday, today] of lines.values()) {
+    const brand = brands.filter(item => item.end <= (nameWords[0]?.top ?? -1)).pop()?.label;
+    const name = nameWords.map(word => word.text).join('');
+    const spec = specWords.map(word => word.text).join('');
     const prices = { yesterday: readPrice(yesterday), today: readPrice(today) };
     const index = findProduct(name, spec);
+    const named = PRODUCTS.filter(product => key(product.name) === key(namesForReview(name)));
     if (index >= 0) {
-      rows.push({ index, ...prices });
-    } else if (names.length && (prices.yesterday || prices.today) &&
+      const row = matchedRow(index, brand, name, prices);
+      if (row) {
+        rows.push(row);
+        // 记下缺价的格子，供后续定向补识别（数字白名单）。
+        const allWords = [...nameWords, ...specWords, ...yesterday, ...today];
+        if (allWords.length) {
+          const top = Math.min(...allWords.map(word => word.top));
+          const bottom = Math.max(...allWords.map(word => word.top + word.height));
+          for (const field of PRICE_KEYS) {
+            if (!prices[field]) missing.push({ index, field, top, bottom });
+          }
+        }
+      }
+    } else if (named.length) {
+      for (const product of named) {
+        const candidate = PRODUCTS.indexOf(product);
+        if (brandMatches(candidate, brand)) rows.push({ index: candidate, checkSpec: true });
+      }
+    } else if ((prices.yesterday || prices.today) &&
         PRODUCTS.some(product => specKey(product.spec) === specKey(spec))) {
-      const left = Math.min(...names.map(word => word.left));
-      const top = Math.min(...names.map(word => word.top));
-      const bottom = Math.max(...names.map(word => word.top + word.height));
-      unclear.push({ spec, prices, left, top, bottom });
+      // 只要名字没匹配上就安排一次定向重试：OCR 可能"很自信地读错"，不能只看置信度。
+      const left = Math.min(...nameWords.map(word => word.left));
+      const top = Math.min(...nameWords.map(word => word.top));
+      const bottom = Math.max(...nameWords.map(word => word.top + word.height));
+      unclear.push({ spec, prices, left, top, bottom, brand });
     }
   }
-  return { rows, unclear };
+  return { rows, unclear, missing };
 }
 
 function metadata(text) {
@@ -78,34 +134,71 @@ function metadata(text) {
   return { dates, sources };
 }
 
+// 没有日期栏的截图，可以用"与其他有日期截图重复的报价"推断它属于同一批。
+function unlinkedPhotos(images, dated) {
+  const keys = images.map(image => new Set((image.rows || [])
+    .filter(row => !row.checkSpec && row.yesterday && row.today)
+    .map(row => [row.index, row.yesterday, row.today].join('/'))));
+  const linked = new Set(dated);
+  for (let pass = 0; pass < images.length; pass++) {
+    const prior = linked.size;
+    keys.forEach((rows, i) => {
+      if (!linked.has(i) && [...linked].some(j => [...rows].some(row => keys[j].has(row)))) linked.add(i);
+    });
+    if (linked.size === prior) break;
+  }
+  return images.flatMap((image, i) => image.rows?.length && !linked.has(i) ? [i + 1] : []);
+}
+
 export function assembleOcr(images) {
-  const draft = blankDraft();
   const dates = new Set();
   const sources = new Set();
-  const conflicts = new Set();
-  for (const image of images) {
-    if (image.issue) draft.issues.push(image.issue);
+  const issues = [];
+  const dated = [];
+  const matches = PRODUCTS.map(() => []);
+  images.forEach((image, n) => {
+    if (image.issue) issues.push(image.issue);
     const meta = metadata(image.text || '');
+    if (meta.dates.length) dated.push(n);
     meta.dates.forEach(date => dates.add(date));
     meta.sources.forEach(source => sources.add(source));
-    for (const row of image.rows || []) {
-      const prices = draft.prices[row.index];
-      for (const field of PRICE_KEYS) {
-        const id = row.index + '/' + field;
-        if (!row[field] || conflicts.has(id)) continue;
-        if (prices[field] && Number(prices[field]) !== Number(row[field])) {
-          prices[field] = '';
-          conflicts.add(id);
-          draft.issues.push(PRODUCTS[row.index].name + (field === 'today' ? ' 今日' : ' 昨日') + '识别结果冲突，已留空。');
-        } else {
-          prices[field] = row[field];
-        }
+    for (const row of image.rows || []) matches[row.index].push({ ...row, photo: n + 1 });
+  });
+  const date = dates.size === 1 ? [...dates][0] : '';
+  const source = sources.size === 1 ? [...sources][0] : '';
+  if (!date) issues.push(dates.size ? '截图日期不一致，请分批导入。' : '请对照原图填写本批行情日期。');
+  if (!source) issues.push('请对照原图填写本批来源。');
+  return { matches, date, source, issues, mixedDates: dates.size > 1,
+    confirmPhotos: date ? unlinkedPhotos(images, dated) : [] };
+}
+
+// 把本次识别结果合并进已有草稿：只更新识别到的酒款，冲突或需人工确认的格子标记为待核对。
+export function mergeScan(existing, batch) {
+  const review = [];
+  const prices = existing.prices.map((prior, i) => {
+    const row = { ...prior };
+    const records = batch.matches[i];
+    const checked = {};
+    for (const field of PRICE_KEYS) {
+      const choices = [...new Set(records.filter(item => !item.checkSpec && item[field]).map(item => item[field]))];
+      const verified = records.some(item => !item.checkSpec && !item.checkBrand && item[field]);
+      if (choices.length === 1 && verified) {
+        row[field] = choices[0];
+      } else if (records.length) {
+        const photos = [...new Set(records.map(item => item.photo))];
+        checked[field] = {
+          choices,
+          photos,
+          reason: choices.length > 1 ? '报价冲突'
+            : choices.length ? '品牌待核对'
+            : records.every(item => item.checkSpec) ? '规格待核对' : '数字待核对'
+        };
       }
+      // 本次没有识别到这款酒时保留原值，不打扰用户。
     }
-  }
-  if (dates.size === 1) draft.date = dates.values().next().value;
-  else draft.issues.push(dates.size ? '截图日期不一致，请核实并填写。' : '没有识别出行情日期，请按原图填写。');
-  if (sources.size === 1) draft.source = sources.values().next().value;
-  else draft.issues.push(sources.size ? '截图来源不一致，请核实并填写。' : '没有识别出数据来源，请按原图填写。');
-  return draft;
+    review.push(checked);
+    return row;
+  });
+  return { ...existing, prices, review, date: batch.date, source: batch.source,
+    issues: batch.issues, locked: false };
 }

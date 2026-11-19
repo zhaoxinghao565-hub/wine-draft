@@ -1,6 +1,7 @@
 import { PRODUCTS, GROUPS, PRICE_KEYS, article, blankDraft, imageName, importDraft,
   outputDraft, pendingCount, priceValue, screenshotPrompt, trend, validDate } from './data.js';
 import { makeCover, makeLong } from './artwork.js';
+import { mergeScan } from './ocr-parse.js';
 import { DEFAULT_BRAND, brandName, clearBrand, loadBrand, normalizeBrand, saveBrand, sealOf } from './brand.js';
 
 const $ = id => document.getElementById(id);
@@ -16,6 +17,23 @@ let queuedRender = null;
 let selected = 'cover';
 let contactQr = { key: '', promise: null };
 let scanning = false;
+let photoUrls = [];
+
+// 保留本次识别的原图，便于对照核对。
+function showPhotos(photos) {
+  photoUrls.forEach(url => URL.revokeObjectURL(url));
+  photoUrls = photos.map(photo => URL.createObjectURL(photo));
+  const box = $('scan-refs');
+  if (!box) return;
+  box.replaceChildren(...photoUrls.map((url, i) => {
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = '查看原图 ' + (i + 1);
+    return link;
+  }));
+}
 
 function loadContactQr() {
   // 二维码可替换：填了就用自定义图片，否则用内置 contact-qr.png。
@@ -111,10 +129,14 @@ function makePriceTable() {
         field.setAttribute('aria-label', name + ' ' + spec + (key === 'today' ? ' 今日行情' : ' 昨日行情'));
         field.addEventListener('input', () => {
           draft.prices[rowIndex][key] = field.value;
+          if (draft.review?.[rowIndex]) delete draft.review[rowIndex][key];
           dataChanged();
           refreshRow(rowIndex);
         });
-        row.insertCell().append(field);
+        const review = document.createElement('div');
+        review.id = 'review-' + key + '-' + rowIndex;
+        review.className = 'review';
+        row.insertCell().append(field, review);
       }
     }
     group.append(heading, table);
@@ -127,6 +149,28 @@ function refreshRow(index) {
   for (const key of PRICE_KEYS) {
     const field = $(key + '-' + index);
     field.value = row[key];
+    const check = draft.review?.[index]?.[key];
+    field.dataset.review = String(Boolean(check));
+    const panel = $('review-' + key + '-' + index);
+    panel.replaceChildren();
+    if (check) {
+      const note = document.createElement('span');
+      note.className = 'review-note';
+      note.textContent = check.reason + (photoUrls.length && check.photos?.length ? ' · 图' + check.photos.join('、') : '');
+      panel.append(note);
+      const values = check.choices?.length ? check.choices : (priceValue(row[key]) !== null ? [row[key]] : []);
+      for (const value of values) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'review-option';
+        button.textContent = check.choices?.length ? '选 ' + value : '确认原价';
+        button.addEventListener('click', () => {
+          field.value = value;
+          field.dispatchEvent(new Event('input'));
+        });
+        panel.append(button);
+      }
+    }
     field.setAttribute('aria-invalid', String(row[key].trim() !== '' && priceValue(row[key]) === null));
   }
   $('today-' + index).dataset.trend = trend(row);
@@ -161,12 +205,21 @@ function canConfirmFormal() {
 }
 
 function currentOutput() {
-  return outputDraft(draft, $('output-kind').value === 'quote');
+  const prices = draft.prices.map((row, i) => ({
+    yesterday: draft.review?.[i]?.yesterday ? '' : row.yesterday,
+    today: draft.review?.[i]?.today ? '' : row.today
+  }));
+  return outputDraft({ ...draft, prices }, $('output-kind').value === 'quote');
+}
+
+function reviewCount() {
+  return (draft.review || []).filter(check => Object.keys(check || {}).length).length;
 }
 
 function refreshText() {
   const count = pendingCount(draft);
-  $('count').textContent = count ? count + ' 款待核实' : '15 款已录入';
+  const reviewing = reviewCount();
+  $('count').textContent = reviewing ? reviewing + ' 款待核对' : (count ? count + ' 款待核实' : '15 款已录入');
   const formal = draft.hideWatermark;
   const ready = canConfirmFormal();
   const exported = currentOutput();
@@ -456,38 +509,54 @@ $('screenshots').addEventListener('change', event => {
 $('scan').addEventListener('click', async () => {
   const field = $('screenshots');
   const input = Array.from(field.files);
+  const status = $('scan-status');
   if (scanning || !input.length) return;
-  // 识别会用新草稿整份替换当前内容，先确认，避免误覆盖手工录入的价格。
-  if (hasDraftContent() && !window.confirm('识别会用新结果整份替换当前的日期、来源和价格，且无法撤销。继续识别？')) {
-    $('scan-status').textContent = '已取消识别，当前草稿保持不变。';
+  if (input.length > 5) {
+    field.value = '';
+    status.textContent = '一次最多识别 5 张。请重新选择 1～5 张截图。';
     return;
   }
   scanning = true;
-  field.disabled = $('scan').disabled = true;
-  const status = $('scan-status');
-  status.textContent = '正在准备本机识别…';
+  field.disabled = true;
+  $('scan').disabled = true;
   const version = generation;
+  status.textContent = '正在准备本机识别…';
   try {
     const { recognizeScreenshots } = await import('./ocr.js');
-    const next = await recognizeScreenshots(input, (index, count) => {
+    const batch = await recognizeScreenshots(input, (index, count) => {
       status.textContent = '正在识别第 ' + index + ' / ' + count + ' 张截图…';
     });
     if (version !== generation) {
-      status.textContent = '识别期间草稿已改动。点击「识别并填入」可重新识别。';
+      status.textContent = '识别期间草稿已改动，请重新点「识别并填入」。';
       return;
     }
-    const filled = next.prices.flatMap(row => PRICE_KEYS.map(key => row[key])).filter(Boolean).length;
-    if (!filled) {
-      status.textContent = '这批截图未识别出可核对的价格。可换清晰的四列表格原图或手动填写。';
+    if (batch.mixedDates) {
+      status.textContent = '截图日期不一致，请按日期分别识别。草稿已保留。';
       return;
     }
+    if (!batch.matches.some(rows => rows.length)) {
+      status.textContent = '没有匹配到已有酒款，请换清晰的四列行情截图。草稿已保留。';
+      return;
+    }
+    if (batch.confirmPhotos.length && !window.confirm('图 ' + batch.confirmPhotos.join('、') +
+        ' 没有日期，也无法通过重复报价与有日期的截图衔接。确认它们都属于 ' + batch.date + ' 的行情吗？')) {
+      status.textContent = '已取消本次识别，草稿已保留。';
+      return;
+    }
+    const next = mergeScan(draft, batch);
+    draft = next;
+    showPhotos(input);
     $('json').value = '';
-    replaceDraft(next, '');
+    $('import-status').textContent = '';
     $('price-details').open = true;
+    fillEditor();
+    update();
     field.value = '';
-    status.textContent = '已填入 ' + filled + ' / 30 个价格。请对照截图核实，再预览与导出。';
+    const updated = next.review.filter(check => !Object.keys(check).length).length;
+    status.textContent = '已完整更新 ' + updated + ' 款，' + (PRODUCTS.length - updated) +
+      ' 款待核对。黄色价格可对照原图修改或确认，未确认前导出显示「—」。';
   } catch {
-    status.textContent = '本机识别未能启动。请联网重试，或使用手动录入 / JSON。';
+    status.textContent = '识别未完成，草稿已保留。请联网重试或换一张清晰截图。';
   } finally {
     scanning = false;
     field.disabled = false;

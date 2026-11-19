@@ -1,4 +1,4 @@
-import { assembleOcr, findProduct, readRows } from './ocr-parse.js';
+import { assembleOcr, findProduct, matchedRow, needsBrandLabels, readRows } from './ocr-parse.js';
 
 const engine = new URL('./ocr-engine/', import.meta.url);
 const nameCharacters = '0123456789零一二三四五六七八九十百年飞天原箱整散瓶公斤茅台度精品水晶剑珍藏级普代粮液()（）';
@@ -48,7 +48,24 @@ function cropRedBlock(pixels, width, block) {
     }
   }
   ctx.putImageData(image, 0, 0);
-  return header;
+
+  // 日期块左边的黑底品牌标题（茅台 / 五粮液 / 剑南春…），用于校验酒款归属。
+  const brandLeft = Math.floor(width * 0.275);
+  const brandWidth = Math.max(1, left - brandLeft - 4);
+  const brand = makeCanvas(brandWidth + 16, bottom - top + 16);
+  const brandCtx = brand.getContext('2d');
+  const brandData = brandCtx.createImageData(brand.width, brand.height);
+  brandData.data.fill(255);
+  for (let y = Math.max(0, top + 5); y < bottom - 5; y++) {
+    for (let x = brandLeft; x < brandLeft + brandWidth; x++) {
+      const raw = 4 * (y * width + x);
+      const out = 4 * ((y - top + 8) * brand.width + x - brandLeft + 8);
+      const shade = pixels[raw] >= 90 && pixels[raw + 1] >= 90 && pixels[raw + 2] >= 90 ? 0 : 255;
+      brandData.data.fill(shade, out, out + 3);
+    }
+  }
+  brandCtx.putImageData(brandData, 0, 0);
+  return { header, brand, end: bottom + 6 };
 }
 
 // 长截图里每个品牌区块都有自己的红色日期块，位置不固定；整图扫描并取前几个。
@@ -140,7 +157,7 @@ async function retryNames(worker, canvas, boundary, unclear) {
   await worker.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: nameCharacters });
   const rows = [];
   try {
-    for (const item of unclear) {
+    for (const item of unclear.slice(0, 14)) {
       const left = Math.max(0, Math.min(item.left - 12, Math.floor(boundary * 0.24)));
       const top = Math.max(0, item.top - 20);
       const width = boundary - 14 - left;
@@ -152,7 +169,39 @@ async function retryNames(worker, canvas, boundary, unclear) {
       ctx.drawImage(canvas, left, top, width, height, 0, 13, 600, 125);
       const { data } = await worker.recognize(crop);
       const index = findProduct(data.text, item.spec);
-      if (index >= 0 && data.confidence >= 60) rows.push({ index, ...item.prices });
+      const row = matchedRow(index, item.brand, data.text, item.prices);
+      if (row && data.confidence >= 60) rows.push({ ...row, checkBrand: false });
+    }
+    return rows;
+  } finally {
+    await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
+  }
+}
+
+// 缺价的格子用数字白名单单独再识别一次，避免整行因为一个格子而留空。
+async function retryMissingPrices(worker, canvas, columns, missing) {
+  if (!missing.length) return [];
+  const rows = [];
+  try {
+    await worker.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '0123456789.' });
+    for (const item of missing.slice(0, 12)) {
+      const start = item.field === 'yesterday' ? columns[1] : columns[2];
+      const end = item.field === 'yesterday' ? columns[2] : canvas.width;
+      const left = Math.max(0, start - 4);
+      const width = Math.max(8, Math.min(canvas.width, end + 4) - left);
+      const top = Math.max(0, item.top - 6);
+      const height = Math.min(canvas.height, item.bottom + 6) - top;
+      const crop = makeCanvas(Math.max(8, width * 2), Math.max(8, height * 2));
+      const ctx = crop.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, crop.width, crop.height);
+      ctx.drawImage(canvas, left, top, width, height, 0, 0, crop.width, crop.height);
+      const { data } = await worker.recognize(crop);
+      const value = (data.text || '').replace(/[^\d.]/g, '');
+      if (/^\d{1,7}(?:\.\d{1,2})?$/.test(value)) {
+        rows.push({ index: item.index, [item.field]: value, checkBrand: false });
+      }
+      crop.width = crop.height = 1;
     }
     return rows;
   } finally {
@@ -181,11 +230,22 @@ export async function recognizeScreenshots(files, progress) {
         const { canvas, headers, meta, columns } = prepareScreenshot(await loadScreenshot(file));
         const { data } = await worker.recognize(canvas, {}, { text: true, tsv: true });
         let banner = '';
-        for (const header of headers) banner += (await worker.recognize(header)).data.text + '\n';
+        const brands = [];
+        const needBrands = needsBrandLabels();
+        for (const item of headers) {
+          banner += (await worker.recognize(item.header)).data.text + '\n';
+          if (needBrands) {
+            const label = (await worker.recognize(item.brand)).data.text.replace(/\s/g, '');
+            brands.push({ end: item.end, label });
+          }
+        }
         const topText = meta ? (await worker.recognize(meta)).data.text : '';
         const marked = (banner + '\n' + topText).trim();
-        const { rows, unclear } = readRows(data.tsv, columns);
-        if (columns) rows.push(...await retryNames(worker, canvas, columns[0], unclear));
+        const { rows, unclear, missing } = readRows(data.tsv, columns, brands);
+        if (columns) {
+          rows.push(...await retryNames(worker, canvas, columns[0], unclear));
+          rows.push(...await retryMissingPrices(worker, canvas, columns, missing));
+        }
         const issue = rows.length ? '' : '第 ' + (index + 1) + ' 张未匹配到酒款，请换清晰的四列表格截图。';
         results.push({ rows, text: data.text + '\n' + marked, issue });
       } catch {
