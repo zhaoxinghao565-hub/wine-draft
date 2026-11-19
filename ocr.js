@@ -14,6 +14,17 @@ function makeCanvas(width, height) {
   return canvas;
 }
 
+function averageBrightness(ctx, width, height) {
+  const { data } = ctx.getImageData(0, 0, width, height);
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < data.length; i += 4 * 53) {
+    sum += 0.30 * data[i] + 0.59 * data[i + 1] + 0.11 * data[i + 2];
+    count += 1;
+  }
+  return count ? sum / count : 255;
+}
+
 async function loadScreenshot(file) {
   const url = URL.createObjectURL(file);
   try {
@@ -22,12 +33,24 @@ async function loadScreenshot(file) {
     await image.decode();
     // 长截图压得太小会让 30px 的文字变成 20px，识别率明显下降；上限放宽到 3200。
     const scale = Math.min(1, 3200 / Math.max(image.naturalWidth, image.naturalHeight));
-    const canvas = makeCanvas(Math.round(image.naturalWidth * scale), Math.round(image.naturalHeight * scale));
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-    return canvas;
+    const raw = makeCanvas(Math.round(image.naturalWidth * scale), Math.round(image.naturalHeight * scale));
+    const rawCtx = raw.getContext('2d');
+    rawCtx.fillStyle = '#fff';
+    rawCtx.fillRect(0, 0, raw.width, raw.height);
+    rawCtx.drawImage(image, 0, 0, raw.width, raw.height);
+
+    let work = raw;
+    // 深色模式截图（黑底白字）Tesseract 几乎读不出来，识别前先做反色；日期红块仍从原图取。
+    if (averageBrightness(rawCtx, raw.width, raw.height) < 110) {
+      work = makeCanvas(raw.width, raw.height);
+      const ctx = work.getContext('2d');
+      ctx.drawImage(raw, 0, 0);
+      ctx.globalCompositeOperation = 'difference';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, work.width, work.height);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    return { raw, work };
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -97,11 +120,15 @@ function headerImages(pixels, width, height) {
     .map(block => cropRedBlock(pixels, width, block));
 }
 
-export function prepareScreenshot(canvas) {
+export function prepareScreenshot(raw, work = raw) {
+  const canvas = work;
   const { width, height } = canvas;
+  const rawCtx = raw.getContext('2d');
+  const rawData = raw === work ? null : rawCtx.getImageData(0, 0, width, height).data;
   const ctx = canvas.getContext('2d');
   const { data } = ctx.getImageData(0, 0, width, height);
-  const headers = headerImages(data, width, height);
+  // 红底日期块和顶部元信息始终在原始配色上检测，反色图会把红色变成青色。
+  const headers = headerImages(rawData || data, width, height);
   const masked = new Uint8Array(height);
   const left = Math.floor(width * 0.1);
   const right = Math.floor(width * 0.9);
@@ -148,14 +175,15 @@ export function prepareScreenshot(canvas) {
   const metaCtx = meta.getContext('2d');
   metaCtx.fillStyle = '#fff';
   metaCtx.fillRect(0, 0, width, metaHeight);
-  metaCtx.drawImage(canvas, 0, 0, width, metaHeight, 0, 0, width, metaHeight);
+  metaCtx.drawImage(raw, 0, 0, width, metaHeight, 0, 0, width, metaHeight);
   return { canvas, headers, meta, columns };
 }
 
-async function retryNames(worker, canvas, boundary, unclear) {
+async function retryNames(worker, canvas, columns, unclear, budget) {
   if (!unclear.length) return [];
+  const boundary = columns[0];
+  const recovered = [];
   await worker.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: nameCharacters });
-  const rows = [];
   try {
     for (const item of unclear.slice(0, 14)) {
       const left = Math.max(0, Math.min(item.left - 12, Math.floor(boundary * 0.24)));
@@ -168,40 +196,59 @@ async function retryNames(worker, canvas, boundary, unclear) {
       ctx.fillRect(0, 0, 600, 150);
       ctx.drawImage(canvas, left, top, width, height, 0, 13, 600, 125);
       const { data } = await worker.recognize(crop);
+      crop.width = crop.height = 1;
       const index = findProduct(data.text, item.spec);
       const row = matchedRow(index, item.brand, data.text, item.prices);
-      if (row && data.confidence >= 60) rows.push({ ...row, checkBrand: false });
+      if (row && data.confidence >= 60) recovered.push({ row, item });
     }
-    return rows;
   } finally {
     await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
   }
+  // 名字救回来了但价格还缺的行，循环结束后再统一补识别（参数切换很贵，集中做）。
+  for (const { row, item } of recovered) {
+    for (const field of ['yesterday', 'today']) {
+      if (!row[field] && budget.left > 0) {
+        budget.left -= 1;
+        row[field] = await ocrCell(worker, canvas, columns, field, item.top, item.bottom);
+      }
+    }
+  }
+  return recovered.map(({ row }) => ({ ...row, checkBrand: false }));
 }
 
-// 缺价的格子用数字白名单单独再识别一次，避免整行因为一个格子而留空。
-async function retryMissingPrices(worker, canvas, columns, missing) {
+// 用数字白名单单独识别一个价格单元格（深色截图已在 work 图里反色）。
+async function ocrCell(worker, canvas, columns, field, top, bottom) {
+  const start = field === 'yesterday' ? columns[1] : columns[2];
+  const end = field === 'yesterday' ? columns[2] : canvas.width;
+  const left = Math.max(0, start - 10);
+  const width = Math.max(8, Math.min(canvas.width, end + 10) - left);
+  const y = Math.max(0, top - 8);
+  const height = Math.max(8, Math.min(canvas.height, bottom + 8) - y);
+  const crop = makeCanvas(Math.max(8, width * 2), Math.max(8, height * 2));
+  const ctx = crop.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, crop.width, crop.height);
+  ctx.drawImage(canvas, left, y, width, height, 0, 0, crop.width, crop.height);
+  let value = '';
+  try {
+    await worker.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '0123456789.' });
+    const { data } = await worker.recognize(crop);
+    value = (data.text || '').replace(/[^\d.]/g, '');
+  } finally {
+    crop.width = crop.height = 1;
+  }
+  return /^\d{1,7}(?:\.\d{1,2})?$/.test(value) ? value : '';
+}
+
+async function retryMissingPrices(worker, canvas, columns, missing, budget) {
   if (!missing.length) return [];
   const rows = [];
   try {
-    await worker.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '0123456789.' });
-    for (const item of missing.slice(0, 12)) {
-      const start = item.field === 'yesterday' ? columns[1] : columns[2];
-      const end = item.field === 'yesterday' ? columns[2] : canvas.width;
-      const left = Math.max(0, start - 4);
-      const width = Math.max(8, Math.min(canvas.width, end + 4) - left);
-      const top = Math.max(0, item.top - 6);
-      const height = Math.min(canvas.height, item.bottom + 6) - top;
-      const crop = makeCanvas(Math.max(8, width * 2), Math.max(8, height * 2));
-      const ctx = crop.getContext('2d');
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, crop.width, crop.height);
-      ctx.drawImage(canvas, left, top, width, height, 0, 0, crop.width, crop.height);
-      const { data } = await worker.recognize(crop);
-      const value = (data.text || '').replace(/[^\d.]/g, '');
-      if (/^\d{1,7}(?:\.\d{1,2})?$/.test(value)) {
-        rows.push({ index: item.index, [item.field]: value, checkBrand: false });
-      }
-      crop.width = crop.height = 1;
+    for (const item of missing) {
+      if (budget.left <= 0) break;
+      budget.left -= 1;
+      const value = await ocrCell(worker, canvas, columns, item.field, item.top, item.bottom);
+      if (value) rows.push({ index: item.index, [item.field]: value, checkBrand: false });
     }
     return rows;
   } finally {
@@ -224,10 +271,13 @@ export async function recognizeScreenshots(files, progress) {
   try {
     await worker.setParameters({ tessedit_pageseg_mode: '6' });
     const results = [];
+    // 价格单元格补识别很贵（每次约 2 秒），整批最多补 4 格。
+    const cellBudget = { left: 4 };
     for (const [index, file] of files.entries()) {
       progress(index + 1, files.length);
       try {
-        const { canvas, headers, meta, columns } = prepareScreenshot(await loadScreenshot(file));
+        const shot = await loadScreenshot(file);
+        const { canvas, headers, meta, columns } = prepareScreenshot(shot.raw, shot.work);
         const { data } = await worker.recognize(canvas, {}, { text: true, tsv: true });
         let banner = '';
         const brands = [];
@@ -243,8 +293,8 @@ export async function recognizeScreenshots(files, progress) {
         const marked = (banner + '\n' + topText).trim();
         const { rows, unclear, missing } = readRows(data.tsv, columns, brands);
         if (columns) {
-          rows.push(...await retryNames(worker, canvas, columns[0], unclear));
-          rows.push(...await retryMissingPrices(worker, canvas, columns, missing));
+          rows.push(...await retryNames(worker, canvas, columns, unclear, cellBudget));
+          rows.push(...await retryMissingPrices(worker, canvas, columns, missing, cellBudget));
         }
         const issue = rows.length ? '' : '第 ' + (index + 1) + ' 张未匹配到酒款，请换清晰的四列表格截图。';
         results.push({ rows, text: data.text + '\n' + marked, issue });

@@ -552,9 +552,12 @@ $('scan').addEventListener('click', async () => {
     fillEditor();
     update();
     field.value = '';
-    const updated = next.review.filter(check => !Object.keys(check).length).length;
-    status.textContent = '已完整更新 ' + updated + ' 款，' + (PRODUCTS.length - updated) +
-      ' 款待核对。黄色价格可对照原图修改或确认，未确认前导出显示「—」。';
+    // 按"本次真正识别到几款"报数，未识别到的行保持原值（不能算作已更新）。
+    const touched = batch.matches.filter(rows => rows.length).length;
+    const reviewing = next.review.filter(check => Object.keys(check).length).length;
+    status.textContent = '本次识别到 ' + touched + ' 款' +
+      (reviewing ? '，其中 ' + reviewing + ' 款待核对' : '') +
+      '；未识别到的酒款保持原值。未确认前导出显示「—」。';
   } catch {
     status.textContent = '识别未完成，草稿已保留。请联网重试或换一张清晰截图。';
   } finally {
