@@ -50,7 +50,7 @@ async function enableOffline() {
   try {
     // 由当前页面预加载，同源私有站授权和本地预览均沿用当前页面的连接。
     const result = await prepareCache(scope, (done, total) => {
-      lastProgress = '正在缓存离线资源 ' + done + ' / ' + total + '…（识别组件约 13 MB）';
+      lastProgress = '正在缓存离线资源 ' + done + ' / ' + total + '…';
       if (!prepared) status.textContent = lastProgress;
     });
     lastProgress = '';

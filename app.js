@@ -3,6 +3,7 @@ import { PRODUCTS, GROUPS, PRICE_KEYS, article, blankDraft, imageName, importDra
 import { makeCover, makeLong } from './artwork.js';
 import { mergeScan } from './ocr-parse.js';
 import { DEFAULT_BRAND, brandName, clearBrand, loadBrand, normalizeBrand, saveBrand, sealOf } from './brand.js';
+import { prepareOcrCache } from './offline-assets.js';
 
 const $ = id => document.getElementById(id);
 const STORAGE_KEY = 'sh-wine-draft-v1';
@@ -520,8 +521,15 @@ $('scan').addEventListener('click', async () => {
   field.disabled = true;
   $('scan').disabled = true;
   const version = generation;
-  status.textContent = '正在准备本机识别…';
+  status.textContent = '正在准备识别组件（约 13 MB，仅首次需要）…';
   try {
+    const cached = await prepareOcrCache(new URL('./', import.meta.url), (done, total) => {
+      if (total) status.textContent = '正在下载识别组件 ' + done + ' / ' + total + '…';
+    });
+    if (cached.failed.length && navigator.onLine === false) {
+      status.textContent = '当前离线，识别组件还没下完。请联网后重试。';
+      return;
+    }
     const { recognizeScreenshots } = await import('./ocr.js');
     const batch = await recognizeScreenshots(input, (index, count) => {
       status.textContent = '正在识别第 ' + index + ' / ' + count + ' 张截图…';

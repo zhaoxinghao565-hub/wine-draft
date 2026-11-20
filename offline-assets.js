@@ -1,5 +1,6 @@
-// 离线缓存清单。识别组件（ocr-engine）也一并缓存，断网时仍可识别新截图。
-const files = new Map([
+// 离线缓存清单。制稿壳和识别组件分开：打开页面只缓存壳，
+// 约 13 MB 的识别组件在第一次点「识别并填入」时再下载。
+const shellFiles = new Map([
   ['index.html', /text\/html/i],
   ['style.css', /text\/css/i],
   ['app.js', /javascript/i],
@@ -14,7 +15,10 @@ const files = new Map([
   ['manifest.json', /json/i],
   ['contact-qr.png', /image\/png/i],
   ['icon-192.png', /image\/png/i],
-  ['icon-512.png', /image\/png/i],
+  ['icon-512.png', /image\/png/i]
+]);
+
+const ocrFiles = new Map([
   // Tesseract.js 本地识别引擎（约 13 MB）。分开发布时 Content-Type 可能是
   // text/javascript、application/gzip 或 application/octet-stream，这里一并接受。
   ['ocr-engine/tesseract.esm.min.js', /javascript/i],
@@ -25,12 +29,14 @@ const files = new Map([
   ['ocr-engine/eng.traineddata.gz', /octet-stream|gzip/i]
 ]);
 
+const files = new Map([...shellFiles, ...ocrFiles]);
+
 export const cachePrefix = scope => 'wine-draft:' + scope.href + ':';
 export const cacheName = scope => cachePrefix(scope) + 'v3.3.2';
 export const isAsset = name => files.has(name);
 export const resource = (scope, name) => new URL(name, scope).href;
 export const assetNames = () => [...files.keys()];
-export const ocrAssetNames = () => [...files.keys()].filter(name => name.startsWith('ocr-engine/'));
+export const ocrAssetNames = () => [...ocrFiles.keys()];
 
 async function fetchAsset(scope, name) {
   const response = await fetch(resource(scope, name), { cache: 'reload', credentials: 'same-origin' });
@@ -42,10 +48,10 @@ async function fetchAsset(scope, name) {
   return response;
 }
 
-export async function prepareCache(scope, onProgress) {
+async function cacheMissing(scope, selected, onProgress) {
   const cache = await caches.open(cacheName(scope));
   const missing = [];
-  for (const name of files.keys()) {
+  for (const name of selected.keys()) {
     if (!(await cache.match(resource(scope, name)))) missing.push(name);
   }
   const total = missing.length;
@@ -70,4 +76,12 @@ export async function prepareCache(scope, onProgress) {
     if (onProgress) onProgress(done, total);
   }
   return { total, failed };
+}
+
+export function prepareCache(scope, onProgress) {
+  return cacheMissing(scope, shellFiles, onProgress);
+}
+
+export function prepareOcrCache(scope, onProgress) {
+  return cacheMissing(scope, ocrFiles, onProgress);
 }

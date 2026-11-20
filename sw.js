@@ -1,6 +1,6 @@
 import { cacheName, cachePrefix, isAsset, prepareCache, resource } from './offline-assets.js';
 
-// v2 增加正式稿与本机截图识别入口。
+// 安装时只缓存制稿壳。识别组件由页面在第一次识别时写入同一缓存。
 const scope = new URL(self.registration.scope);
 
 self.addEventListener('install', event => {
